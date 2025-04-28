@@ -1067,3 +1067,277 @@ class LoanRecordGenerator:
             'repayment_history': repayment_history,
             'repayment_summary': repayment_summary
         }
+    
+    def _generate_status_data(self, customer_data: Dict[str, Any],
+                        loan_record: Dict[str, Any],
+                        repayment_data: Dict[str, Any],
+                        end_date: datetime) -> Dict[str, Any]:
+        """
+        生成贷款状态数据
+        
+        Args:
+            customer_data: 客户数据
+            loan_record: 贷款记录
+            repayment_data: 还款数据
+            end_date: 截止日期
+            
+        Returns:
+            Dict[str, Any]: 状态数据
+        """
+        # 如果有状态模型，使用模型生成
+        if self.status_model:
+            # 获取贷款初始状态
+            loan_type = loan_record.get('loan_type', 'personal_consumption')
+            credit_score = customer_data.get('credit_score', 700)
+            
+            initial_status = self.status_model.get_initial_status(
+                loan_type, credit_score, is_historical=True
+            )
+            
+            # 生成状态时间线
+            status_timeline = self.status_model.generate_status_timeline(
+                initial_status, loan_record.get('disbursement_date', datetime.now()),
+                loan_record, is_historical=True
+            )
+            
+            # 生成状态事件
+            status_events = self.status_model.generate_status_events(
+                status_timeline, loan_record
+            )
+            
+            # 获取当前状态
+            current_status = self.status_model.get_status_at_date(
+                status_timeline, end_date
+            )
+            
+            # 生成状态摘要
+            status_summary = self.status_model.get_status_summary(
+                loan_record.get('loan_id', ''), loan_record, status_timeline
+            )
+            
+            return {
+                'current_status': current_status,
+                'status_timeline': status_timeline,
+                'status_events': status_events,
+                'status_summary': status_summary
+            }
+        
+        # 没有状态模型，根据还款情况生成基础状态数据
+        repayment_history = repayment_data.get('repayment_history', [])
+        repayment_summary = repayment_data.get('repayment_summary', {})
+        
+        # 贷款基本信息
+        loan_amount = loan_record.get('loan_amount', 0)
+        disbursement_date = loan_record.get('disbursement_date', datetime.now())
+        maturity_date = loan_record.get('maturity_date', datetime.now())
+        
+        # 已还本金
+        paid_principal = repayment_summary.get('total_paid_principal', 0)
+        
+        # 确定当前状态
+        current_status = 'active'  # 默认状态
+        
+        # 检查是否已结清
+        if paid_principal >= loan_amount * 0.99:  # 允许1%的舍入误差
+            if end_date < maturity_date - timedelta(days=30):
+                current_status = 'early_settled'  # 提前结清
+            else:
+                current_status = 'settled'  # 正常结清
+        else:
+            # 检查是否存在逾期
+            current_overdue = False
+            current_overdue_days = 0
+            
+            # 查找当前应还但未还的还款
+            for payment in repayment_history:
+                if payment.get('status') == 'scheduled' and payment.get('payment_date') < end_date:
+                    current_overdue = True
+                    current_overdue_days = (end_date - payment.get('payment_date')).days
+                    break
+            
+            if current_overdue:
+                if current_overdue_days > 90:
+                    current_status = 'defaulted'  # 逾期超过90天视为违约
+                else:
+                    current_status = 'overdue'  # 逾期状态
+        
+        # 生成状态时间线
+        status_timeline = []
+        
+        # 添加发放状态
+        status_timeline.append({
+            'status': 'disbursed',
+            'start_date': disbursement_date,
+            'end_date': disbursement_date + timedelta(days=1),
+            'duration_days': 1
+        })
+        
+        # 添加活动状态
+        active_start = disbursement_date + timedelta(days=1)
+        active_end = end_date
+        
+        # 如果当前不是活动状态，找到状态改变的时间点
+        if current_status != 'active':
+            # 查找状态改变的时间点
+            if current_status in ['settled', 'early_settled']:
+                # 最后一次成功还款日期视为结清日期
+                last_payment = next((p for p in reversed(repayment_history) 
+                                if p.get('status') in ['paid', 'paid_late']), None)
+                if last_payment:
+                    active_end = last_payment.get('actual_payment_date', end_date)
+            elif current_status in ['overdue', 'defaulted']:
+                # 第一次逾期的计划还款日期
+                first_overdue = next((p for p in repayment_history 
+                                if p.get('status') == 'scheduled' and p.get('payment_date') < end_date), None)
+                if first_overdue:
+                    active_end = first_overdue.get('payment_date', end_date)
+        
+        # 添加活动状态
+        status_timeline.append({
+            'status': 'active',
+            'start_date': active_start,
+            'end_date': active_end,
+            'duration_days': (active_end - active_start).days
+        })
+        
+        # 如果当前不是活动状态，添加当前状态
+        if current_status != 'active':
+            status_timeline.append({
+                'status': current_status,
+                'start_date': active_end,
+                'end_date': end_date,
+                'duration_days': (end_date - active_end).days
+            })
+        
+        # 生成简单的状态摘要
+        status_summary = {
+            'loan_id': loan_record.get('loan_id', ''),
+            'customer_id': customer_data.get('customer_id', ''),
+            'current_status': current_status,
+            'days_in_current_status': (end_date - status_timeline[-1]['start_date']).days,
+            'has_risk': current_status in ['overdue', 'defaulted'],
+            'completion_percentage': repayment_summary.get('progress_percentage', 0)
+        }
+        
+        return {
+            'current_status': current_status,
+            'status_timeline': status_timeline,
+            'status_summary': status_summary
+        }
+    
+    def _merge_loan_data(self, loan_record: Dict[str, Any],
+                    repayment_data: Dict[str, Any],
+                    status_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        合并所有贷款数据到最终记录
+        
+        Args:
+            loan_record: 贷款记录
+            repayment_data: 还款数据
+            status_data: 状态数据
+            
+        Returns:
+            Dict[str, Any]: 最终的贷款记录
+        """
+        # 创建最终记录的副本
+        final_record = loan_record.copy()
+        
+        # 添加还款数据
+        final_record['repayment_schedule'] = repayment_data.get('repayment_schedule', [])
+        final_record['repayment_history'] = repayment_data.get('repayment_history', [])
+        final_record['repayment_summary'] = repayment_data.get('repayment_summary', {})
+        
+        # 如果有逾期报告，添加到记录
+        if 'overdue_report' in repayment_data and repayment_data['overdue_report']:
+            final_record['overdue_report'] = repayment_data['overdue_report']
+        
+        # 添加状态数据
+        final_record['current_status'] = status_data.get('current_status', 'active')
+        final_record['status_timeline'] = status_data.get('status_timeline', [])
+        
+        if 'status_events' in status_data:
+            final_record['status_events'] = status_data['status_events']
+        
+        final_record['status_summary'] = status_data.get('status_summary', {})
+        
+        # 添加最后更新时间
+        final_record['last_updated'] = datetime.now()
+        
+        # 计算并添加总体统计
+        # 1. 已还本金和利息
+        paid_principal = sum(p.get('actual_principal', 0) for p in final_record['repayment_history'] 
+                        if p.get('status') in ['paid', 'paid_late'])
+        paid_interest = sum(p.get('actual_interest', 0) for p in final_record['repayment_history'] 
+                        if p.get('status') in ['paid', 'paid_late'])
+        total_paid = paid_principal + paid_interest
+        
+        # 2. 逾期情况
+        overdue_payments = sum(1 for p in final_record['repayment_history'] if p.get('is_overdue', False))
+        overdue_fees = sum((p.get('late_fee', 0) + p.get('penalty_interest', 0)) 
+                        for p in final_record['repayment_history'] if p.get('is_overdue', False))
+        
+        # 3. 剩余金额
+        loan_amount = loan_record.get('loan_amount', 0)
+        remaining_principal = loan_amount - paid_principal
+        
+        # 添加统计数据
+        final_record['statistics'] = {
+            'total_paid': round(total_paid, 2),
+            'paid_principal': round(paid_principal, 2),
+            'paid_interest': round(paid_interest, 2),
+            'remaining_principal': round(max(0, remaining_principal), 2),
+            'overdue_payments': overdue_payments,
+            'overdue_fees': round(overdue_fees, 2),
+            'completion_percentage': round((paid_principal / loan_amount) * 100 if loan_amount > 0 else 0, 1)
+        }
+        
+        return final_record
+    
+    def generate_loans_batch(self, customer_data: Dict[str, Any],
+                       count: int = 1,
+                       start_date_range: Tuple[datetime, datetime] = None,
+                       end_date: Optional[datetime] = None) -> List[Dict[str, Any]]:
+        """
+        批量生成多笔贷款记录
+        
+        Args:
+            customer_data: 客户数据
+            count: 生成贷款的数量
+            start_date_range: 贷款开始日期范围，格式为(最早日期, 最晚日期)
+            end_date: 贷款结束日期，默认为当前日期
+            
+        Returns:
+            List[Dict[str, Any]]: 贷款记录列表
+        """
+        # 如果没有指定结束日期，默认为当前日期
+        if end_date is None:
+            end_date = datetime.now()
+        
+        # 如果没有指定开始日期范围，默认为结束日期前1-365天
+        if start_date_range is None:
+            earliest_date = end_date - timedelta(days=365)
+            latest_date = end_date - timedelta(days=30)
+            start_date_range = (earliest_date, latest_date)
+        
+        # 生成贷款记录
+        loans = []
+        
+        for _ in range(count):
+            # 随机选择开始日期
+            days_range = (start_date_range[1] - start_date_range[0]).days
+            if days_range <= 0:
+                # 如果范围无效，使用默认范围
+                days_ago = random.randint(30, 365)
+                start_date = end_date - timedelta(days=days_ago)
+            else:
+                days_ago = random.randint(0, days_range)
+                start_date = start_date_range[0] + timedelta(days=days_ago)
+            
+            # 生成贷款记录
+            try:
+                loan = self.generate_loan(customer_data, start_date, end_date)
+                loans.append(loan)
+            except Exception as e:
+                print(f"生成贷款记录时出错：{e}")
+        
+        return loans
