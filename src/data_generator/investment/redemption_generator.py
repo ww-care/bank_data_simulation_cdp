@@ -1,35 +1,7 @@
-    # 辅助方法
-    def _get_product_type(self, product_id):
-        """获取产品类型信息辅助方法"""
-        # TODO: 实际实现时需要从数据库获取
-        # 这里仅作为框架设计示例
-        return "monetary_fund"  # 默认返回值
-    
-    def _get_customer_info(self, customer_id):
-        """获取客户信息辅助方法"""
-        # TODO: 实际实现时需要从数据库获取
-        # 这里仅作为框架设计示例
-        return {"is_vip": False}  # 默认返回值
-    
-    def _get_product_info(self, product_id):
-        """获取产品信息辅助方法"""
-        # TODO: 实际实现时需要从数据库获取
-        # 这里仅作为框架设计示例
-        return {
-            "minimuminvestment": 1000,
-            "lock_period_days": 7,
-            "redemptionway": "随时赎回"
-        }  # 默认返回值
-    
-    def _get_active_investments(self):
-        """获取所有未完全赎回的投资记录"""
-        # TODO: 实际实现时需要从数据库获取
-        # 这里仅作为框架设计示例
-        return []  # 默认返回空列表"""
-理财赎回行为生成器
-模拟客户的理财产品赎回行为，包括到期自动赎回、提前赎回和部分赎回
-"""
+import random
+import datetime
 
+from src.data_generator.investment.utils import InvestmentUtils
 
 class RedemptionGenerator:
     """理财赎回行为生成器"""
@@ -104,9 +76,362 @@ class RedemptionGenerator:
         return redemption_records
         
     def generate_early_redemptions(self, investments, date_range):
-        """生成提前赎回行为"""
-        # TODO: 实现提前赎回行为生成逻辑
-        pass
+        """
+        生成提前赎回行为
+        
+        Args:
+            investments (list): 投资记录列表，包含持有中的理财产品信息
+            date_range (tuple): 日期范围，格式为(start_date, end_date)
+            
+        Returns:
+            list: 生成的赎回记录列表
+        """
+        import random
+        import datetime
+        
+        # 验证输入参数
+        if not investments:
+            self.logger.debug("没有投资记录，无法生成赎回行为")
+            return []
+        
+        # 解析日期范围
+        start_date, end_date = date_range
+        
+        # 确保日期类型一致
+        if isinstance(start_date, str):
+            start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d').date()
+        if isinstance(end_date, str):
+            end_date = datetime.datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        # 初始化结果列表
+        redemption_records = []
+        
+        # 从配置获取赎回参数
+        early_redemption_base_prob = self.redemption_config.get('early_redemption_base_prob', 0.02)
+        partial_redemption_prob = self.redemption_config.get('partial_redemption_prob', 0.4)
+        
+        self.logger.info(f"开始生成提前赎回记录，投资记录数: {len(investments)}, 日期范围: {start_date} 至 {end_date}")
+        
+        # 按日期遍历，每天检查可能的赎回事件
+        current_date = start_date
+        while current_date <= end_date:
+            # 当日可能赎回的投资列表（状态为持有或部分卖出）
+            valid_investments = [
+                inv for inv in investments
+                if (inv.get('wealth_status') in ['持有', '部分卖出']) and
+                (self._parse_date(inv.get('wealth_date')) < current_date)  # 购买日期早于当前日期
+            ]
+            
+            # 如果没有有效投资，跳过当天
+            if not valid_investments:
+                current_date += datetime.timedelta(days=1)
+                continue
+            
+            self.logger.debug(f"处理日期 {current_date}, 有效投资记录数: {len(valid_investments)}")
+            
+            # 当日赎回记录
+            day_redemptions = []
+            
+            # 遍历每笔投资，计算赎回概率
+            for investment in valid_investments:
+                # 获取购买日期
+                purchase_date = self._parse_date(investment.get('wealth_date'))
+                
+                # 计算持有天数
+                days_held = (current_date - purchase_date).days
+                
+                # 获取投资信息
+                investment_id = investment.get('detail_id')
+                customer_id = investment.get('base_id')
+                product_id = investment.get('product_id')
+                hold_amount = investment.get('hold_amount', 0)
+                
+                # 如果持有金额为0，跳过
+                if hold_amount <= 0:
+                    continue
+                
+                # 检查赎回约束条件
+                can_redeem, reason = self.check_redemption_constraints(investment, current_date)
+                if not can_redeem:
+                    self.logger.debug(f"投资 {investment_id} 不满足赎回条件: {reason}")
+                    continue
+                
+                # 计算赎回概率
+                redemption_prob = self.calculate_redemption_probability(investment, days_held)
+                
+                # 考虑市场因素和季节性因素调整概率
+                market_factor = self._get_market_factor(current_date)
+                seasonal_factor = self._get_seasonal_factor(current_date)
+                
+                adjusted_prob = redemption_prob * market_factor * seasonal_factor
+                
+                # 随机决定是否赎回
+                if random.random() < adjusted_prob:
+                    # 决定是部分赎回还是全部赎回
+                    is_partial = random.random() < partial_redemption_prob
+                    
+                    if is_partial and hold_amount > 1000:  # 只有金额足够大时才考虑部分赎回
+                        # 确定部分赎回
+                        is_partial = self.determine_partial_redemption(investment)
+                        
+                        if is_partial:
+                            # 计算部分赎回金额
+                            redemption_amount = self.calculate_partial_amount(investment)
+                        else:
+                            # 全额赎回
+                            redemption_amount = hold_amount
+                    else:
+                        # 金额较小或概率不满足，全额赎回
+                        is_partial = False
+                        redemption_amount = hold_amount
+                    
+                    # 创建赎回记录
+                    redemption_time = self._generate_redemption_time(current_date, customer_id)
+                    
+                    redemption_record = {
+                        'investment_id': investment_id,
+                        'customer_id': customer_id,
+                        'product_id': product_id,
+                        'redemption_date': current_date,
+                        'redemption_time': redemption_time,
+                        'redemption_timestamp': int(redemption_time.timestamp() * 1000),  # 13位时间戳
+                        'redemption_amount': round(redemption_amount, 2),
+                        'is_full_redemption': not is_partial,
+                        'redemption_type': 'early',  # 提前赎回
+                        'channel': self._get_redemption_channel(investment),
+                        'remaining_amount': round(hold_amount - redemption_amount, 2) if is_partial else 0
+                    }
+                    
+                    # 添加到当日赎回记录
+                    day_redemptions.append(redemption_record)
+                    
+                    # 更新投资记录的持有金额和状态
+                    if is_partial:
+                        investment['hold_amount'] = round(hold_amount - redemption_amount, 2)
+                        investment['wealth_status'] = '部分卖出'
+                    else:
+                        investment['hold_amount'] = 0
+                        investment['wealth_status'] = '完全赎回'
+                        investment['wealth_all_redeem_time'] = redemption_record['redemption_timestamp']
+            
+            # 处理当日赎回记录
+            if day_redemptions:
+                self.logger.info(f"日期 {current_date} 生成赎回记录 {len(day_redemptions)} 条")
+                
+                # 记录赎回流水
+                self._record_redemption_transactions(day_redemptions)
+                
+                # 添加到总结果
+                redemption_records.extend(day_redemptions)
+            
+            # 移动到下一天
+            current_date += datetime.timedelta(days=1)
+        
+        self.logger.info(f"提前赎回记录生成完成，总生成记录数: {len(redemption_records)}")
+        
+        return redemption_records
+
+    def _parse_date(self, date_value):
+        """
+        解析日期值为标准日期对象
+        
+        Args:
+            date_value: 日期值，可能是字符串、日期或时间戳
+            
+        Returns:
+            datetime.date: 标准日期对象
+        """
+        import datetime
+        
+        if not date_value:
+            return datetime.date(2000, 1, 1)  # 默认日期
+        
+        # 如果已经是日期对象，直接返回
+        if isinstance(date_value, datetime.date):
+            return date_value
+        
+        # 如果是datetime对象，转换为date
+        if isinstance(date_value, datetime.datetime):
+            return date_value.date()
+        
+        # 如果是字符串，尝试解析
+        if isinstance(date_value, str):
+            try:
+                return datetime.datetime.strptime(date_value, '%Y-%m-%d').date()
+            except ValueError:
+                try:
+                    return datetime.datetime.strptime(date_value, '%Y/%m/%d').date()
+                except ValueError:
+                    self.logger.error(f"无法解析日期: {date_value}")
+                    return datetime.date(2000, 1, 1)  # 默认日期
+        
+        # 如果是时间戳（整数或浮点数）
+        if isinstance(date_value, (int, float)):
+            try:
+                # 假设是毫秒级时间戳
+                if date_value > 1000000000000:  # 13位时间戳
+                    date_value /= 1000
+                return datetime.datetime.fromtimestamp(date_value).date()
+            except:
+                self.logger.error(f"无法从时间戳解析日期: {date_value}")
+                return datetime.date(2000, 1, 1)  # 默认日期
+        
+        # 其他情况，返回默认日期
+        return datetime.date(2000, 1, 1)
+
+    def _generate_redemption_time(self, redemption_date, customer_id):
+        """
+        生成赎回时间
+        
+        Args:
+            redemption_date (datetime.date): 赎回日期
+            customer_id (str): 客户ID
+            
+        Returns:
+            datetime.datetime: 赎回时间
+        """
+        import random
+        import datetime
+        
+        # 获取客户信息，确定客户类型
+        customer_info = self._get_customer_info(customer_id)
+        customer_type = customer_info.get('customer_type', 'personal')
+        
+        # 确定是否工作日
+        is_workday = redemption_date.weekday() < 5  # 周一至周五
+        
+        # 获取赎回时间分布模型
+        time_distribution = InvestmentUtils.get_redemption_time_distribution(None, is_workday)
+        
+        # 按权重随机选择时间段
+        time_periods = list(time_distribution.keys())
+        period_weights = [period_info['weight'] for period_info in time_distribution.values()]
+        
+        selected_period = random.choices(time_periods, weights=period_weights, k=1)[0]
+        period_info = time_distribution[selected_period]
+        
+        # 获取该时间段的小时范围和高峰时间
+        hours = period_info.get('hours', [9, 10, 11])  # 默认上午9-11点
+        peak_time = period_info.get('peak_time', '10:30')
+        
+        # 解析高峰时间
+        peak_hour, peak_minute = map(int, peak_time.split(':'))
+        
+        # 生成具体时间
+        # 70%的概率集中在高峰时间附近±1小时，30%的概率在整个时间段内随机分布
+        if random.random() < 0.7:
+            # 高峰时间附近
+            hour = random.randint(max(hours[0], peak_hour - 1), min(hours[-1], peak_hour + 1))
+            if hour == peak_hour:
+                # 更集中在高峰分钟附近
+                minute = random.randint(max(0, peak_minute - 15), min(59, peak_minute + 15))
+            else:
+                minute = random.randint(0, 59)
+        else:
+            # 整个时间段随机
+            hour = random.choice(hours)
+            minute = random.randint(0, 59)
+        
+        second = random.randint(0, 59)
+        
+        # 创建日期时间对象
+        redemption_time = datetime.datetime.combine(
+            redemption_date, datetime.time(hour, minute, second))
+        
+        return redemption_time
+
+    def _get_market_factor(self, date):
+        """
+        获取市场因素对赎回的影响因子
+        
+        Args:
+            date (datetime.date): 日期
+            
+        Returns:
+            float: 市场因子 (0.7-1.3)
+        """
+        import random
+        
+        # 实际实现应考虑历史市场数据
+        # 这里使用简化实现，模拟市场波动
+        
+        # 每月1-5日赎回概率略高（月初资金需求）
+        if 1 <= date.day <= 5:
+            return random.uniform(1.1, 1.3)
+        
+        # 每月25-30/31日赎回概率略高（月末资金需求）
+        if date.day >= 25:
+            return random.uniform(1.1, 1.3)
+        
+        # 其他日期正常波动
+        return random.uniform(0.7, 1.1)
+
+    def _get_seasonal_factor(self, date):
+        """
+        获取季节性因素对赎回的影响因子
+        
+        Args:
+            date (datetime.date): 日期
+            
+        Returns:
+            float: 季节性因子 (0.8-1.2)
+        """
+        # 月份因素
+        month = date.month
+        
+        # 春节前（1月）赎回率高
+        if month == 1:
+            return 1.2
+        
+        # 年中（6月）和年末（12月）赎回率高
+        if month in [6, 12]:
+            return 1.15
+        
+        # 3、9月开学季赎回率略高
+        if month in [3, 9]:
+            return 1.1
+        
+        # 其他月份正常
+        return 0.9
+
+    def _get_redemption_channel(self, investment):
+        """
+        确定赎回渠道，通常与购买渠道相同
+        
+        Args:
+            investment (dict): 投资记录
+            
+        Returns:
+            str: 赎回渠道
+        """
+        import random
+        
+        # 获取购买渠道
+        purchase_channel = investment.get('channel')
+        
+        # 90%的概率使用相同渠道赎回
+        if purchase_channel and random.random() < 0.9:
+            return purchase_channel
+        
+        # 10%的概率使用其他渠道
+        channels = ['mobile_app', 'online_banking', 'counter', 'phone_banking']
+        weights = [0.5, 0.3, 0.15, 0.05]  # 偏好更方便的渠道
+        
+        return random.choices(channels, weights=weights, k=1)[0]
+
+    def _record_redemption_transactions(self, redemption_records):
+        """
+        记录赎回交易流水
+        
+        Args:
+            redemption_records (list): 赎回记录列表
+        """
+        # 实际实现应创建资金流水记录
+        # 这里只记录日志
+        self.logger.debug(f"记录 {len(redemption_records)} 条赎回交易流水")
+        
+        # TODO: 添加资金流水记录逻辑
+        # 例如调用db_manager创建资金账户流水记录
         
     def calculate_redemption_probability(self, investment, days_held):
         """计算赎回概率
