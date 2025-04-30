@@ -11,6 +11,7 @@ from .events_generator import InvestmentEventGenerator
 from .utils import InvestmentUtils
 from .models.investment_record import InvestmentRecord
 from .config_adapter import InvestmentConfigAdapter
+from src.utils.batch_processing import BatchProcessingOptimizer
 
 
 class InvestmentRecordGenerator:
@@ -2200,35 +2201,49 @@ class InvestmentRecordGenerator:
             self.logger.error(f"获取客户投资记录时出错: {str(e)}")
             return []
 
-    def _parse_date(self, date_str):
+    def _parse_date(self, date_value):
         """
-        解析日期字符串为日期对象
+        解析日期值为标准日期对象
         
         Args:
-            date_str (str): 日期字符串
+            date_value: 日期值，可能是字符串、日期或时间戳
             
         Returns:
-            datetime.date: 日期对象，无法解析则返回None
+            datetime.date: 标准日期对象
         """
-        if not date_str:
+        if not date_value:
             return None
         
         import datetime
         
         # 如果已经是日期对象
-        if isinstance(date_str, datetime.date):
-            return date_str
+        if isinstance(date_value, datetime.date):
+            # 如果是datetime对象，需要提取date部分
+            if isinstance(date_value, datetime.datetime):
+                return date_value.date()
+            return date_value
         
         # 如果是字符串
-        if isinstance(date_str, str):
+        if isinstance(date_value, str):
             try:
-                return datetime.datetime.strptime(date_str, '%Y-%m-%d').date()
+                return datetime.datetime.strptime(date_value, '%Y-%m-%d').date()
             except ValueError:
                 try:
-                    return datetime.datetime.strptime(date_str, '%Y/%m/%d').date()
+                    return datetime.datetime.strptime(date_value, '%Y/%m/%d').date()
                 except ValueError:
                     return None
         
+        # 如果是时间戳（整数或浮点数）
+        if isinstance(date_value, (int, float)):
+            try:
+                # 假设是毫秒级时间戳
+                if date_value > 1000000000000:  # 13位时间戳
+                    date_value /= 1000
+                return datetime.datetime.fromtimestamp(date_value).date()
+            except:
+                return None
+        
+        # 其他情况无法解析
         return None
 
     def _calculate_wealth_phase(self, customer_info, investments, current_investment=None):
@@ -2408,3 +2423,169 @@ class InvestmentRecordGenerator:
         except Exception as e:
             self.logger.error(f"更新客户信息时出错: {str(e)}")
             return False
+
+    def optimize_batch_generation(self, start_date, end_date, customer_ids=None):
+        """
+        使用批处理优化器生成历史理财数据
+        
+        Args:
+            start_date (datetime.date): 开始日期
+            end_date (datetime.date): 结束日期
+            customer_ids (list, optional): 客户ID列表
+            
+        Returns:
+            dict: 处理统计信息
+        """
+        # 创建批处理优化器
+        optimizer = BatchProcessingOptimizer(
+            self.db_manager, 
+            self.logger,
+            initial_batch_size=1000,
+            max_batch_size=5000,
+            min_batch_size=200
+        )
+        
+        # 定义数据生成器函数（接受batch_size参数）
+        def data_generator(batch_size):
+            # 获取一批客户
+            customers = self._get_eligible_customers(
+                customer_ids=customer_ids,
+                limit=batch_size
+            )
+            if not customers:
+                return []
+            
+            # 获取可用产品
+            products = self._get_available_products(start_date, end_date)
+            if not products:
+                return []
+            
+            # 生成投资记录
+            records = []
+            for customer in customers:
+                # 为客户生成投资记录...
+                customer_records = self._generate_customer_investments(
+                    customer, products, (start_date, end_date)
+                )
+                records.extend(customer_records)
+            
+            return records
+        
+        # 定义数据导入函数
+        def data_importer(data):
+            if not data:
+                return 0
+            self._import_batch_records(data)
+            return len(data)
+        
+        # 定义进度回调
+        def progress_callback(progress, processed, total):
+            if processed % 1000 == 0 or progress == 1.0:
+                self.logger.info(f"生成进度: {progress:.1%} ({processed}/{total})")
+        
+        # 获取总客户数量
+        total_customers = len(customer_ids) if customer_ids else self._count_eligible_customers()
+        
+        # 使用优化器处理数据
+        self.logger.info(f"开始优化批处理生成理财数据，总客户数: {total_customers}")
+        stats = optimizer.process_batch(
+            data_generator,
+            data_importer,
+            total_count=total_customers,
+            progress_callback=progress_callback
+        )
+        
+        # 返回处理统计
+        return stats
+    
+    def _generate_customer_investments(self, customer, products, date_range):
+        """
+        为单个客户生成投资记录
+        
+        Args:
+            customer (dict): 客户信息
+            products (list): 可用产品列表
+            date_range (tuple): 日期范围(start_date, end_date)
+            
+        Returns:
+            list: 生成的投资记录列表
+        """
+        import random
+        import datetime
+        
+        start_date, end_date = date_range
+        customer_id = customer.get('base_id')
+        customer_type = customer.get('customer_type', 'personal')
+        
+        # 确定购买次数
+        total_days = (end_date - start_date).days + 1
+        min_purchases, max_purchases = self._get_purchase_count_range(customer, total_days)
+        purchase_count = random.randint(min_purchases, max_purchases)
+        
+        # 如果没有购买，返回空列表
+        if purchase_count == 0:
+            return []
+        
+        # 选择购买日期
+        purchase_dates = self._select_purchase_dates(start_date, end_date, purchase_count, customer_type)
+        
+        # 获取匹配的产品
+        matched_products = self.product_matcher.find_matching_products(
+            customer, limit=min(20, len(products))
+        )
+        
+        if not matched_products:
+            return []
+        
+        # 生成投资记录
+        investment_records = []
+        
+        for purchase_date in purchase_dates:
+            # 重新筛选当前可用产品
+            current_matched_products = [
+                p for p in matched_products 
+                if self._is_product_available(p['product'], purchase_date)
+            ]
+            
+            if not current_matched_products:
+                continue
+                
+            # 选择产品
+            selected_product = self._weighted_sample_products(current_matched_products, 1)[0]['product']
+            
+            # 计算购买金额
+            purchase_amount = self.calculate_investment_amount(customer, selected_product)
+            
+            # 生成购买时间
+            purchase_time = self._generate_purchase_time(purchase_date, customer_type)
+            
+            # 计算到期日期
+            investment_period = selected_product.get('investment_period', 0)
+            maturity_date = InvestmentUtils.calculate_maturity_date(
+                purchase_date, term_months=investment_period
+            )
+            
+            # 创建理财购买记录
+            investment_record = {
+                'detail_id': InvestmentUtils.generate_transaction_id(prefix="INV"),
+                'base_id': customer_id,
+                'detail_time': int(purchase_time.timestamp() * 1000),
+                'product_id': selected_product.get('base_id'),
+                'purchase_amount': purchase_amount,
+                'hold_amount': purchase_amount,
+                'term': investment_period * 30 if investment_period else 0,
+                'wealth_purchase_time': int(purchase_time.timestamp() * 1000),
+                'wealth_all_redeem_time': None,
+                'wealth_date': purchase_date,
+                'wealth_status': '持有',
+                'maturity_time': int(datetime.datetime.combine(
+                    maturity_date, datetime.time(0, 0)).timestamp() * 1000) if maturity_date else None,
+                'status': '成功',
+                'channel': self._generate_purchase_channel(customer),
+                'expected_return': selected_product.get('expected_yield', 0),
+                'account_id': self._get_customer_account(customer_id)
+            }
+            
+            investment_records.append(investment_record)
+        
+        return investment_records

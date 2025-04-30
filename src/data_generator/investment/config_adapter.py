@@ -146,6 +146,16 @@ class InvestmentConfigAdapter:
         if risk_level_distribution:
             # 例如：如果配置中low风险产品占比很高，可以适当调整映射权重
             low_risk_ratio = risk_level_distribution.get('low', 0)
+            # 添加类型检查
+            if not isinstance(low_risk_ratio, (int, float)):
+                # 默认行为，可以返回默认映射或抛出异常
+                return {
+                    'R1': 'conservative',
+                    'R2': 'balanced',
+                    'R3': 'growth',
+                    'R4': 'aggressive',
+                    'R5': 'speculative'
+                }
             if low_risk_ratio > 0.6:  # 如果低风险产品占比超过60%
                 # 提高低风险产品的权重
                 for risk_level, mapping in risk_mapping.items():
@@ -153,6 +163,7 @@ class InvestmentConfigAdapter:
                         mapping["weight"] = min(1.0, mapping["weight"] * 1.2)
         
         self.logger.debug(f"Risk level mapping constructed with {len(risk_mapping)} levels")
+        
         return risk_mapping
     
     def get_investment_amount_config(self):
