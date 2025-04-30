@@ -15,6 +15,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any, Union
 
 from src.time_manager.time_manager import get_time_manager
+from src.config_manager import ConfigManager
 
 
 class BaseArchiveGenerator:

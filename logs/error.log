@@ -1,0 +1,39 @@
+2025-04-30 13:46:43,761 - historical_generation - ERROR - /Users/vv/Desktop/bank_data_simulation_cdp/scripts/run_historical.py:53 - 历史数据生成失败: 'ConfigManager' object has no attribute 'get_config'
+Traceback (most recent call last):
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/scripts/run_historical.py", line 35, in main
+    generator = get_data_generator()
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/data_generator.py", line 546, in get_data_generator
+    _instance = DataGenerator()
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/data_generator.py", line 66, in __init__
+    self._init_cdp_generators()
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/data_generator.py", line 84, in _init_cdp_generators
+    self.product_archive_generator = ProductArchiveGenerator(self.faker, self.config_manager)
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/archive_generators.py", line 93, in __init__
+    self.investment_config = config_manager.get_config().get('investment', {})
+AttributeError: 'ConfigManager' object has no attribute 'get_config'
+2025-04-30 13:49:18,978 - historical_generation - ERROR - /Users/vv/Desktop/bank_data_simulation_cdp/scripts/run_historical.py:53 - 历史数据生成失败: 'ConfigManager' object has no attribute 'get_config'
+Traceback (most recent call last):
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/scripts/run_historical.py", line 35, in main
+    generator = get_data_generator()
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/data_generator.py", line 546, in get_data_generator
+    _instance = DataGenerator()
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/data_generator.py", line 66, in __init__
+    self._init_cdp_generators()
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/data_generator.py", line 84, in _init_cdp_generators
+    self.product_archive_generator = ProductArchiveGenerator(self.faker, self.config_manager)
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/archive_generators.py", line 94, in __init__
+    self.investment_config = config_manager.get_config().get('investment', {})
+AttributeError: 'ConfigManager' object has no attribute 'get_config'
+2025-04-30 13:52:58,991 - historical_generation - ERROR - /Users/vv/Desktop/bank_data_simulation_cdp/scripts/run_historical.py:53 - 历史数据生成失败: 'ConfigManager' object has no attribute 'get_config'
+Traceback (most recent call last):
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/scripts/run_historical.py", line 35, in main
+    generator = get_data_generator()
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/data_generator.py", line 546, in get_data_generator
+    _instance = DataGenerator()
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/data_generator.py", line 66, in __init__
+    self._init_cdp_generators()
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/data_generator.py", line 85, in _init_cdp_generators
+    self.deposit_type_archive_generator = DepositTypeArchiveGenerator(self.faker, self.config_manager)
+  File "/Users/vv/Desktop/bank_data_simulation_cdp/src/data_generator/archive_generators.py", line 494, in __init__
+    self.account_config = config_manager.get_config().get('account', {})
+AttributeError: 'ConfigManager' object has no attribute 'get_config'
