@@ -559,9 +559,189 @@ class RedemptionGenerator:
         return redemption_amount
         
     def update_investment_status(self, investment_id, redemption_info):
-        """更新投资状态"""
-        # TODO: 实现投资状态更新逻辑
-        pass
+        """
+        更新投资状态
+        
+        根据赎回信息更新投资记录的状态、持有金额和赎回时间
+        
+        Args:
+            investment_id (str): 投资记录ID
+            redemption_info (dict): 赎回信息，包含赎回金额、类型等
+            
+        Returns:
+            bool: 更新是否成功
+            dict: 更新后的投资记录
+        """
+        if not investment_id or not redemption_info:
+            self.logger.error("更新投资状态的参数无效")
+            return False, None
+        
+        try:
+            # 获取当前投资记录
+            investment = self._get_investment_info(investment_id)
+            if not investment:
+                self.logger.error(f"未找到投资记录，ID: {investment_id}")
+                return False, None
+            
+            # 获取赎回信息
+            redemption_amount = float(redemption_info.get('redemption_amount', 0))
+            is_full_redemption = redemption_info.get('is_full_redemption', False)
+            redemption_timestamp = redemption_info.get('redemption_timestamp')
+            
+            # 验证赎回金额
+            current_hold_amount = float(investment.get('hold_amount', 0))
+            
+            if redemption_amount <= 0:
+                self.logger.error(f"赎回金额无效: {redemption_amount}")
+                return False, None
+                
+            if redemption_amount > current_hold_amount:
+                self.logger.error(f"赎回金额({redemption_amount})大于当前持有金额({current_hold_amount})")
+                return False, None
+            
+            # 准备更新内容
+            updates = {}
+            
+            # 更新持有金额
+            new_hold_amount = current_hold_amount - redemption_amount
+            updates['hold_amount'] = round(new_hold_amount, 2)
+            
+            # 更新状态
+            if is_full_redemption or new_hold_amount <= 0:
+                # 全部赎回
+                updates['wealth_status'] = '完全赎回'
+                updates['wealth_all_redeem_time'] = redemption_timestamp
+                updates['hold_amount'] = 0  # 确保持有金额为0
+            else:
+                # 部分赎回
+                updates['wealth_status'] = '部分卖出'
+            
+            # 执行更新
+            success = self._update_investment_record(investment_id, updates)
+            
+            if success:
+                # 合并原记录和更新内容，返回更新后的记录
+                updated_investment = {**investment, **updates}
+                
+                # 记录日志
+                self.logger.info(f"投资记录 {investment_id} 状态更新成功: {updates}")
+                
+                # 更新客户财富状态
+                if self._update_customer_wealth_status(investment, redemption_info):
+                    self.logger.info(f"客户 {investment.get('base_id')} 财富状态更新成功")
+                
+                return True, updated_investment
+            else:
+                self.logger.error(f"投资记录 {investment_id} a状态更新失败")
+                return False, None
+            
+        except Exception as e:
+            self.logger.error(f"更新投资状态时出错: {str(e)}")
+            return False, None
+
+    def _get_investment_info(self, investment_id):
+        """
+        获取投资记录信息
+        
+        Args:
+            investment_id (str): 投资记录ID
+            
+        Returns:
+            dict: 投资记录信息
+        """
+        try:
+            query = """
+            SELECT * FROM cdp_investment_order 
+            WHERE detail_id = %s
+            """
+            
+            results = self.db_manager.execute_query(query, (investment_id,))
+            
+            if results and len(results) > 0:
+                return results[0]
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"获取投资记录时出错: {str(e)}")
+            return None
+
+    def _update_investment_record(self, investment_id, updates):
+        """
+        更新投资记录
+        
+        Args:
+            investment_id (str): 投资记录ID
+            updates (dict): 需要更新的字段和值
+            
+        Returns:
+            bool: 更新是否成功
+        """
+        try:
+            if not updates:
+                return True
+            
+            # 构建SET子句
+            set_clause = ", ".join([f"{field} = %s" for field in updates.keys()])
+            
+            # 构建参数列表
+            params = list(updates.values())
+            params.append(investment_id)  # WHERE条件参数
+            
+            # 构建更新语句
+            update_query = f"""
+            UPDATE cdp_investment_order 
+            SET {set_clause} 
+            WHERE detail_id = %s
+            """
+            
+            # 执行更新
+            result = self.db_manager.execute_update(update_query, params)
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"更新投资记录时出错: {str(e)}")
+            return False
+
+    def _update_customer_wealth_status(self, investment, redemption_info):
+        """
+        更新客户财富状态
+        
+        Args:
+            investment (dict): 投资记录
+            redemption_info (dict): 赎回信息
+            
+        Returns:
+            bool: 更新是否成功
+        """
+        # 获取客户ID
+        customer_id = investment.get('base_id')
+        if not customer_id:
+            self.logger.warning("投资记录中没有客户ID，无法更新客户财富状态")
+            return False
+        
+        # 构建包含赎回信息的完整记录
+        combined_info = {
+            **investment,
+            'redemption_amount': redemption_info.get('redemption_amount'),
+            'is_full_redemption': redemption_info.get('is_full_redemption'),
+            'wealth_all_redeem_time': redemption_info.get('redemption_timestamp')
+        }
+        
+        # 调用投资记录生成器的客户状态更新方法
+        if hasattr(self, 'investment_generator') and self.investment_generator:
+            # 如果有引用投资记录生成器，直接调用
+            return self.investment_generator.update_customer_wealth_status(customer_id, combined_info)
+        else:
+            # 否则尝试导入并创建一个实例
+            try:
+                from src.data_generator.investment.investment_record_generator import InvestmentRecordGenerator
+                generator = InvestmentRecordGenerator(self.db_manager, self.config, self.logger, self.time_manager)
+                return generator.update_customer_wealth_status(customer_id, combined_info)
+            except Exception as e:
+                self.logger.error(f"创建投资记录生成器实例时出错: {str(e)}")
+                return False
         
     def check_redemption_constraints(self, investment, redemption_date):
         """检查赎回约束条件
