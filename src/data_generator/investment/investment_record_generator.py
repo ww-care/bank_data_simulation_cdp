@@ -2589,3 +2589,1115 @@ class InvestmentRecordGenerator:
             investment_records.append(investment_record)
         
         return investment_records
+    
+    def calculate_investment_amount(self, customer_info, product_info):
+        """
+        计算客户购买特定产品的投资金额
+        
+        考虑客户投资能力、产品最低要求、风险偏好、历史行为等因素
+        
+        Args:
+            customer_info (dict): 客户信息
+            product_info (dict): 产品信息
+            
+        Returns:
+            float: 计算出的投资金额
+        """
+        import random
+        import numpy as np
+        
+        # 获取产品最低投资金额
+        min_investment = product_info.get('minimum_investment', 10000)
+        
+        # 如果最低投资金额不合理，设置默认值
+        if min_investment <= 0:
+            min_investment = 10000
+            self.logger.warning(f"产品 {product_info.get('base_id')} 最低投资金额异常，使用默认值 10000")
+        
+        # 使用产品匹配器计算客户投资能力
+        investment_capacity = self.product_matcher.calculate_investment_capacity(customer_info)
+        min_amount = investment_capacity.get('min_amount', min_investment)
+        max_amount = investment_capacity.get('max_amount', min_investment * 10)
+        suggested_amount = investment_capacity.get('suggested_amount', (min_amount + max_amount) / 2)
+        
+        # 确保最低投资金额不低于产品要求
+        min_amount = max(min_amount, min_investment)
+        
+        # 如果最低金额大于最大金额，调整最大金额
+        if min_amount > max_amount:
+            max_amount = min_amount * 1.5
+        
+        # 获取产品风险等级和客户风险偏好
+        product_risk = product_info.get('risk_level', 'R1')
+        customer_risk = customer_info.get('risk_level', 'R3')
+        
+        # 风险匹配因子：风险等级越匹配，投资金额倾向越高
+        risk_match_factor = self._calculate_risk_match_factor(customer_risk, product_risk)
+        
+        # 根据客户类型和VIP状态调整投资行为
+        customer_type = customer_info.get('customer_type', 'personal')
+        is_vip = customer_info.get('is_vip', False)
+        
+        # 设置基础的金额分布特征
+        if customer_type == 'corporate':
+            # 企业客户倾向于更大金额，且更接近整数值
+            base_amount_factor = 0.7  # 更接近最大值
+            rounding_base = 10000     # 万元整数
+            deviation_factor = 0.05   # 偏离量较小
+        else:  # 个人客户
+            if is_vip:
+                # VIP个人客户也倾向于较大金额
+                base_amount_factor = 0.6
+                rounding_base = 5000  # 5000的整数倍
+                deviation_factor = 0.1
+            else:
+                # 普通个人客户金额更分散
+                base_amount_factor = 0.5  # 居中值
+                rounding_base = 1000      # 1000的整数倍
+                deviation_factor = 0.15   # 偏离量较大
+        
+        # 考虑历史投资行为模式（如果有）
+        history_factor = self._get_investment_history_factor(customer_info)
+        
+        # 季节和市场因素影响 (根据当前日期调整)
+        market_factor = self._get_market_condition_factor()
+        
+        # 计算基础金额：在最小和最大值之间，受多种因素影响
+        # 结合所有因素计算金额定位因子
+        position_factor = (
+            0.4 * base_amount_factor +  # 客户类型基础因子
+            0.3 * history_factor +      # 历史行为因子
+            0.2 * risk_match_factor +   # 风险匹配因子
+            0.1 * market_factor         # 市场条件因子
+        )
+        
+        # 确保因子在0.1-0.9范围内，避免极端值
+        position_factor = max(0.1, min(0.9, position_factor))
+        
+        # 使用对数正态分布生成更真实的金额分布
+        # 对数正态分布能够更好地模拟真实世界中的金额分布
+        mean = min_amount + position_factor * (max_amount - min_amount)
+        sigma = mean * deviation_factor  # 标准差与均值成比例
+        
+        # 生成随机金额
+        if sigma > 0:
+            try:
+                # 使用对数正态分布生成随机值
+                random_amount = np.random.lognormal(
+                    mean=np.log(mean), 
+                    sigma=deviation_factor, 
+                    size=1
+                )[0]
+                
+                # 确保金额在允许范围内
+                random_amount = max(min_amount, min(max_amount, random_amount))
+            except:
+                # 如果numpy不可用或出错，使用简单的随机方法
+                random_amount = mean + random.uniform(-sigma, sigma)
+        else:
+            random_amount = mean
+        
+        # 对基础金额进行取整处理，增加真实感
+        rounded_amount = round(random_amount / rounding_base) * rounding_base
+        
+        # 添加小额随机偏移，避免太多完全相同的金额
+        if rounded_amount >= 100000:  # 对于大额投资
+            random_offset = random.randint(-500, 500)
+        elif rounded_amount >= 10000:
+            random_offset = random.randint(-200, 200)
+        else:
+            random_offset = random.randint(-50, 50)
+        
+        # 计算最终金额，加入随机偏移
+        final_amount = rounded_amount + random_offset
+        
+        # 确保最终金额不低于最低投资要求且不超过最大投资能力
+        final_amount = max(min_amount, min(max_amount, final_amount))
+        
+        # 最后的取整处理，保证金额的合理性
+        final_amount = round(final_amount, 2)  # 保留两位小数
+        
+        self.logger.debug(
+            f"计算投资金额: 客户={customer_info.get('base_id')}, 产品={product_info.get('base_id')}, "
+            f"金额={final_amount}, 范围=[{min_amount}, {max_amount}]"
+        )
+        
+        return final_amount
+    
+    def _calculate_risk_match_factor(self, customer_risk, product_risk):
+        """
+        计算风险匹配因子
+        
+        风险匹配度越高，因子越大
+        
+        Args:
+            customer_risk (str): 客户风险等级
+            product_risk (str): 产品风险等级
+            
+        Returns:
+            float: 风险匹配因子 (0.5-1.2)
+        """
+        # 将风险等级转换为数值
+        risk_values = {'R1': 1, 'R2': 2, 'R3': 3, 'R4': 4, 'R5': 5}
+        
+        customer_risk_value = risk_values.get(customer_risk, 3)
+        product_risk_value = risk_values.get(product_risk, 1)
+        
+        # 计算风险差异
+        risk_diff = abs(customer_risk_value - product_risk_value)
+        
+        # 根据风险差异计算匹配因子
+        if risk_diff == 0:
+            # 完全匹配，因子最高
+            return 1.0
+        elif risk_diff == 1:
+            # 差一级，较高匹配
+            return 0.9
+        elif risk_diff == 2:
+            # 差两级，中等匹配
+            return 0.7
+        else:
+            # 差距较大，低匹配
+            return 0.5
+
+    def _get_investment_history_factor(self, customer_info):
+        """
+        根据客户历史投资行为计算金额调整因子
+        
+        Args:
+            customer_info (dict): 客户信息
+            
+        Returns:
+            float: 历史调整因子 (0-1)
+        """
+        # 检查是否有历史投资金额
+        wealth_amount = customer_info.get('wealthamount', 0)
+        if not wealth_amount:
+            return 0.5  # 默认中等值
+        
+        try:
+            wealth_amount = float(wealth_amount)
+        except (ValueError, TypeError):
+            return 0.5
+        
+        # 根据历史投资金额计算因子
+        if wealth_amount == 0:
+            return 0.3  # 无历史投资，偏向较小金额
+        elif wealth_amount < 50000:
+            return 0.4  # 小额投资历史
+        elif wealth_amount < 200000:
+            return 0.6  # 中等投资历史
+        elif wealth_amount < 1000000:
+            return 0.8  # 大额投资历史
+        else:
+            return 0.9  # 超大额投资历史
+        
+        # 也可以考虑查询数据库获取更详细的历史投资记录
+        # 但为简化实现，这里仅使用客户信息中的总额
+
+    def _get_market_condition_factor(self):
+        """
+        获取当前市场条件因子
+        
+        考虑季节性因素、假期效应等影响投资行为的因素
+        
+        Returns:
+            float: 市场条件因子 (0.7-1.2)
+        """
+        import datetime
+        import random
+        
+        # 获取当前日期
+        current_date = datetime.datetime.now().date()
+        month = current_date.month
+        day = current_date.day
+        
+        # 基础因子
+        base_factor = 0.8
+        
+        # 季节性调整
+        # 年初和年末通常投资活动较多
+        if month in [1, 12]:
+            base_factor += 0.1
+        # 季度末通常投资活动略有增加
+        elif month in [3, 6, 9]:
+            base_factor += 0.05
+        
+        # 月初月末效应
+        if day <= 5:  # 月初
+            base_factor += 0.05
+        elif day >= 25:  # 月末
+            base_factor += 0.1
+        
+        # 添加一些随机波动，模拟市场其他因素
+        random_factor = random.uniform(-0.1, 0.1)
+        
+        # 计算最终因子，并限制在合理范围内
+        final_factor = base_factor + random_factor
+        return max(0.7, min(1.2, final_factor))
+    
+    def generate_investment_batch(self, customer_batch, date_range, products=None, batch_size=1000):
+        """
+        批量生成理财购买记录
+        
+        高效处理大量客户的理财购买记录生成
+        
+        Args:
+            customer_batch (list): 客户批次列表
+            date_range (tuple): 日期范围(start_date, end_date)
+            products (list, optional): 可选的产品列表，如不提供则从数据库查询
+            batch_size (int): 数据库写入的批处理大小
+            
+        Returns:
+            dict: 包含生成统计信息的字典
+        """
+        import random
+        import datetime
+        from concurrent.futures import ThreadPoolExecutor
+        
+        start_date, end_date = date_range
+        
+        # 确保日期格式一致
+        if isinstance(start_date, str):
+            start_date = datetime.datetime.strptime(start_date, '%Y-%m-%d').date()
+        if isinstance(end_date, str):
+            end_date = datetime.datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        # 初始化统计信息
+        stats = {
+            'total_customers': len(customer_batch),
+            'processed_customers': 0,
+            'generated_records': 0,
+            'skipped_customers': 0,
+            'errors': 0,
+            'start_time': datetime.datetime.now(),
+            'end_time': None,
+            'elapsed_seconds': 0
+        }
+        
+        self.logger.info(f"开始批量生成理财购买记录, 客户数量: {stats['total_customers']}")
+        
+        # 如果未提供产品列表，从数据库查询
+        if products is None:
+            products = self._get_available_products(start_date, end_date)
+            if not products:
+                self.logger.warning("没有可用的理财产品，无法生成购买记录")
+                stats['end_time'] = datetime.datetime.now()
+                stats['elapsed_seconds'] = (stats['end_time'] - stats['start_time']).total_seconds()
+                return stats
+        
+        self.logger.info(f"找到 {len(products)} 个可用理财产品")
+        
+        # 内存优化：批次处理客户和记录
+        records_buffer = []
+        total_days = (end_date - start_date).days + 1
+        
+        # 设置随机种子以确保可重复性
+        random_seed = self.config.get('system', {}).get('random_seed', None)
+        if random_seed is not None:
+            random.seed(random_seed)
+        
+        # 处理每个客户
+        for customer in customer_batch:
+            try:
+                stats['processed_customers'] += 1
+                
+                # 每处理100个客户输出一次进度
+                if stats['processed_customers'] % 100 == 0 or stats['processed_customers'] == stats['total_customers']:
+                    elapsed = (datetime.datetime.now() - stats['start_time']).total_seconds()
+                    speed = stats['processed_customers'] / elapsed if elapsed > 0 else 0
+                    self.logger.info(
+                        f"进度: {stats['processed_customers']}/{stats['total_customers']} "
+                        f"客户 ({stats['processed_customers']/stats['total_customers']*100:.1f}%), "
+                        f"已生成 {stats['generated_records']} 条记录, "
+                        f"速度: {speed:.1f} 客户/秒"
+                    )
+                
+                # 确定该客户在时间范围内的投资次数
+                min_purchases, max_purchases = self._get_purchase_count_range(customer, total_days)
+                purchase_count = random.randint(min_purchases, max_purchases)
+                
+                # 如果没有购买，跳过该客户
+                if purchase_count == 0:
+                    stats['skipped_customers'] += 1
+                    continue
+                
+                # 为客户选择购买日期
+                purchase_dates = self._select_purchase_dates(start_date, end_date, purchase_count, customer.get('customer_type', 'personal'))
+                
+                # 使用产品匹配器为客户找到合适的产品
+                matched_products = self.product_matcher.find_matching_products(
+                    customer, products, limit=min(20, len(products))
+                )
+                
+                if not matched_products:
+                    stats['skipped_customers'] += 1
+                    continue
+                
+                # 为每个购买日期生成记录
+                for purchase_date in purchase_dates:
+                    # 筛选当前日期可用的产品
+                    current_products = [
+                        p for p in matched_products 
+                        if self._is_product_available(p['product'], purchase_date)
+                    ]
+                    
+                    if not current_products:
+                        continue
+                    
+                    # 选择产品
+                    selected_product_match = self._weighted_sample_products(current_products, 1)[0]
+                    selected_product = selected_product_match['product']
+                    
+                    # 生成购买记录
+                    investment_record = self._create_investment_record(
+                        customer, selected_product, purchase_date
+                    )
+                    
+                    # 添加到记录缓冲区
+                    records_buffer.append(investment_record)
+                    stats['generated_records'] += 1
+                    
+                    # 当缓冲区达到批处理大小时，导入数据库
+                    if len(records_buffer) >= batch_size:
+                        self._import_batch_records(records_buffer)
+                        records_buffer = []
+            
+            except Exception as e:
+                self.logger.error(f"处理客户 {customer.get('base_id')} 时出错: {str(e)}")
+                stats['errors'] += 1
+        
+        # 处理剩余的记录
+        if records_buffer:
+            self._import_batch_records(records_buffer)
+        
+        # 更新统计信息
+        stats['end_time'] = datetime.datetime.now()
+        stats['elapsed_seconds'] = (stats['end_time'] - stats['start_time']).total_seconds()
+        
+        self.logger.info(
+            f"批量生成完成, 耗时 {stats['elapsed_seconds']:.1f} 秒, "
+            f"处理 {stats['processed_customers']} 客户, "
+            f"生成 {stats['generated_records']} 条记录, "
+            f"跳过 {stats['skipped_customers']} 客户, "
+            f"错误 {stats['errors']} 次"
+        )
+        
+        return stats
+    
+    def _create_investment_record(self, customer, product, purchase_date):
+        """
+        创建单个投资记录
+        
+        Args:
+            customer (dict): 客户信息
+            product (dict): 产品信息
+            purchase_date (datetime.date): 购买日期
+            
+        Returns:
+            dict: 投资记录
+        """
+        import datetime
+        
+        customer_id = customer.get('base_id')
+        customer_type = customer.get('customer_type', 'personal')
+        
+        # 计算购买金额
+        purchase_amount = self.calculate_investment_amount(customer, product)
+        
+        # 生成购买时间
+        purchase_time = self._generate_purchase_time(purchase_date, customer_type)
+        
+        # 计算到期日期
+        investment_period = product.get('investment_period', 0)
+        maturity_date = self._calculate_maturity_date(purchase_date, investment_period)
+        
+        # 计算预期收益率
+        expected_yield = product.get('expected_yield', 0)
+        
+        # 生成交易ID
+        transaction_id = self._generate_transaction_id(prefix="INV")
+        
+        # 获取客户账户
+        account_id = self._get_customer_account(customer_id)
+        
+        # 创建记录
+        investment_record = {
+            'detail_id': transaction_id,
+            'base_id': customer_id,
+            'detail_time': int(purchase_time.timestamp() * 1000),  # 13位毫秒时间戳
+            'product_id': product.get('base_id'),
+            'purchase_amount': purchase_amount,
+            'hold_amount': purchase_amount,  # 初始持有金额等于购买金额
+            'term': investment_period * 30 if investment_period else 0,  # 转换为天数
+            'wealth_purchase_time': int(purchase_time.timestamp() * 1000),
+            'wealth_all_redeem_time': None,  # 初始未赎回
+            'wealth_date': purchase_date,
+            'wealth_status': '持有',  # 初始状态为持有
+            'maturity_time': int(datetime.datetime.combine(
+                maturity_date, datetime.time(0, 0)).timestamp() * 1000) if maturity_date else None,
+            'status': '成功',
+            'channel': self._generate_purchase_channel(customer),
+            'expected_return': expected_yield,
+            'account_id': account_id
+        }
+        
+        return investment_record
+
+    def _calculate_maturity_date(self, purchase_date, investment_period_months):
+        """
+        计算到期日期
+        
+        Args:
+            purchase_date (datetime.date): 购买日期
+            investment_period_months (int): 投资期限(月)
+            
+        Returns:
+            datetime.date: 到期日期
+        """
+        import datetime
+        
+        # 如果没有期限，返回None
+        if not investment_period_months:
+            return None
+        
+        # 计算到期年月
+        year = purchase_date.year
+        month = purchase_date.month + investment_period_months
+        
+        # 处理月份溢出
+        if month > 12:
+            year += month // 12
+            month = month % 12
+        
+        # 如果月份变成0，调整为上一年的12月
+        if month == 0:
+            month = 12
+            year -= 1
+        
+        # 处理日期合法性（例如2月30日等）
+        # 找到目标月份的最大天数
+        if month == 2:
+            # 检查闰年
+            if (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0):
+                max_day = 29
+            else:
+                max_day = 28
+        elif month in [4, 6, 9, 11]:
+            max_day = 30
+        else:
+            max_day = 31
+        
+        # 确保日期合法
+        day = min(purchase_date.day, max_day)
+        
+        # 创建到期日期
+        maturity_date = datetime.date(year, month, day)
+        
+        return maturity_date
+
+    def _generate_transaction_id(self, prefix="INV"):
+        """
+        生成唯一的交易ID
+        
+        Args:
+            prefix (str): ID前缀
+            
+        Returns:
+            str: 交易ID
+        """
+        import uuid
+        import datetime
+        
+        # 获取当前时间戳
+        timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+        
+        # 生成4位随机字符
+        random_part = str(uuid.uuid4())[:4].upper()
+        
+        # 组合ID
+        transaction_id = f"{prefix}{timestamp}{random_part}"
+        
+        return transaction_id
+    
+    def update_customer_wealth_status(self, customer_id, investment_info):
+        """
+        更新客户理财状态信息
+        
+        根据最新的理财购买或赎回记录，更新客户档案中的财富相关属性
+        
+        Args:
+            customer_id (str): 客户ID
+            investment_info (dict): 最新的理财交易信息
+            
+        Returns:
+            bool: 更新是否成功
+        """
+        if not customer_id or not investment_info:
+            self.logger.warning("更新客户理财状态时参数无效")
+            return False
+        
+        try:
+            # 获取客户当前信息
+            customer_info = self._get_customer_info(customer_id)
+            if not customer_info:
+                self.logger.warning(f"未找到客户信息，客户ID: {customer_id}")
+                return False
+            
+            # 获取客户所有投资记录
+            investments = self._get_customer_investments(customer_id)
+            
+            # 检查操作类型
+            is_purchase = 'purchase_amount' in investment_info and investment_info.get('wealth_status', '') == '持有'
+            is_redemption = 'wealth_all_redeem_time' in investment_info and investment_info.get('wealth_all_redeem_time')
+            
+            # 需要更新的属性
+            updates = {}
+            
+            # 1. 处理购买记录
+            if is_purchase:
+                # 获取产品信息
+                product_id = investment_info.get('product_id')
+                product_info = self._get_product_info(product_id)
+                
+                if not product_info:
+                    self.logger.warning(f"未找到产品信息，产品ID: {product_id}")
+                    # 即使找不到产品信息，也继续处理，使用默认值
+                    product_type = '未知'
+                else:
+                    product_type = product_info.get('product_type', '未知')
+                
+                # 1.1 更新首次产品购买类型
+                if not customer_info.get('firstpurchasetype'):
+                    updates['firstpurchasetype'] = product_type
+                    self.logger.debug(f"更新客户首次产品购买类型: {product_type}")
+                
+                # 1.2 更新是否曾持有财富产品标识
+                updates['havewealth'] = '是'
+                
+                # 1.3 更新理财金额
+                current_wealth_amount = float(customer_info.get('wealthamount', 0) or 0)
+                purchase_amount = float(investment_info.get('purchase_amount', 0))
+                updates['wealthamount'] = current_wealth_amount + purchase_amount
+                
+                # 1.4 清除清仓日期（如果有）
+                if customer_info.get('sellwealthdate'):
+                    updates['sellwealthdate'] = None
+            
+            # 2. 处理赎回记录
+            if is_redemption:
+                redemption_time = investment_info.get('wealth_all_redeem_time')
+                
+                # 转换时间戳为日期
+                if isinstance(redemption_time, (int, float)):
+                    if redemption_time > 1000000000000:  # 13位毫秒时间戳
+                        redemption_date = datetime.datetime.fromtimestamp(redemption_time / 1000).date()
+                    else:  # 10位秒时间戳
+                        redemption_date = datetime.datetime.fromtimestamp(redemption_time).date()
+                else:
+                    # 默认使用当前日期
+                    redemption_date = datetime.datetime.now().date()
+                
+                # 2.1 更新用户最近一次理财产品清仓日
+                if investment_info.get('wealth_status') == '完全赎回':
+                    current_sell_date = self._parse_date(customer_info.get('sellwealthdate'))
+                    
+                    # 如果没有记录过清仓日期或新的清仓日期更晚
+                    if not current_sell_date or redemption_date > current_sell_date:
+                        updates['sellwealthdate'] = redemption_date.strftime('%Y-%m-%d')
+                        self.logger.debug(f"更新客户最近一次理财产品清仓日: {redemption_date}")
+                
+                # 2.2 更新理财金额（减去赎回金额）
+                current_wealth_amount = float(customer_info.get('wealthamount', 0) or 0)
+                
+                # 优先使用redemption_amount，如果没有则使用hold_amount
+                if 'redemption_amount' in investment_info:
+                    redemption_amount = float(investment_info.get('redemption_amount', 0))
+                else:
+                    redemption_amount = float(investment_info.get('hold_amount', 0))
+                
+                # 确保不会出现负值
+                new_wealth_amount = max(0, current_wealth_amount - redemption_amount)
+                updates['wealthamount'] = new_wealth_amount
+                
+                # 2.3 检查是否全部清仓
+                has_active_investments = False
+                
+                # 检查是否有其他活跃投资
+                for inv in investments:
+                    # 排除当前记录
+                    if inv.get('detail_id') != investment_info.get('detail_id'):
+                        if inv.get('wealth_status') in ['持有', '部分卖出']:
+                            has_active_investments = True
+                            break
+                
+                # 如果没有活跃投资且当前为完全赎回，更新用户最近一次清仓日期
+                if not has_active_investments and investment_info.get('wealth_status') == '完全赎回':
+                    updates['sellalldate'] = redemption_date.strftime('%Y-%m-%d')
+                    self.logger.debug(f"更新客户最近一次清仓日: {redemption_date}")
+            
+            # 3. 更新财富客户阶段
+            
+            # 获取当前财富阶段
+            current_phase = customer_info.get('wealthcustomerphase', '')
+            
+            # 计算新的财富阶段
+            new_phase = self._calculate_wealth_phase(customer_info, investments, investment_info)
+            
+            # 如果阶段有变化，更新
+            if new_phase != current_phase:
+                updates['wealthcustomerphase'] = new_phase
+                self.logger.debug(f"更新客户财富阶段: {current_phase} -> {new_phase}")
+            
+            # 4. 更新资金未发生支用天数
+            if is_purchase:
+                # 购买行为重置未支用天数
+                updates['nousedays'] = 0
+            else:
+                # 获取最近交易日期
+                last_transaction_date = self._get_last_transaction_date(customer_id)
+                if last_transaction_date:
+                    today = datetime.datetime.now().date()
+                    unused_days = (today - last_transaction_date).days
+                    updates['nousedays'] = unused_days
+            
+            # 5. 执行数据库更新
+            if updates:
+                update_result = self._update_customer_info(customer_id, updates)
+                
+                if update_result:
+                    self.logger.info(f"客户{customer_id}理财状态更新成功: {updates}")
+                    
+                    # 如果是购买记录，生成购买事件
+                    if is_purchase and self.events_generator:
+                        self._generate_purchase_event(customer_id, investment_info)
+                    
+                    # 如果是赎回记录，生成赎回事件
+                    if is_redemption and self.events_generator:
+                        self._generate_redemption_event(customer_id, investment_info)
+                    
+                    return True
+                else:
+                    self.logger.error(f"客户{customer_id}理财状态更新失败")
+                    return False
+            else:
+                self.logger.debug(f"客户{customer_id}理财状态无需更新")
+                return True
+                    
+        except Exception as e:
+            self.logger.error(f"更新客户理财状态时出错: {str(e)}")
+            return False
+        
+    def _import_batch_records(self, records):
+        """
+        批量导入理财购买记录到数据库
+        
+        优化批量导入性能，处理错误和重试机制
+        
+        Args:
+            records (list): 理财购买记录列表
+            
+        Returns:
+            int: 成功导入的记录数量
+        """
+        if not records:
+            return 0
+        
+        try:
+            # 表名和主键字段
+            table_name = 'cdp_investment_order'
+            id_field = 'detail_id'
+            
+            # 预处理记录
+            processed_records = []
+            unique_ids = set()
+            
+            for record in records:
+                # 检查记录有效性和完整性
+                if not self._validate_record(record):
+                    continue
+                    
+                # 确保ID唯一
+                record_id = record.get(id_field)
+                if record_id in unique_ids:
+                    # ID重复，生成新ID
+                    new_id = self._generate_transaction_id(prefix="INV")
+                    self.logger.warning(f"记录ID'{record_id}'重复，使用新ID'{new_id}'")
+                    record[id_field] = new_id
+                    record_id = new_id
+                
+                unique_ids.add(record_id)
+                processed_records.append(record)
+            
+            # 如果没有有效记录，直接返回
+            if not processed_records:
+                self.logger.warning("没有有效记录需要导入")
+                return 0
+            
+            # 记录数量
+            record_count = len(processed_records)
+            
+            # 开始导入
+            self.logger.info(f"开始导入 {record_count} 条理财购买记录")
+            
+            # 使用数据库管理器导入数据
+            try:
+                imported_count = self.db_manager.import_data(table_name, processed_records)
+                self.logger.info(f"成功导入 {imported_count} 条理财购买记录")
+                return imported_count
+            except Exception as db_error:
+                # 数据库错误，尝试分批导入
+                self.logger.warning(f"批量导入失败: {str(db_error)}，尝试分批导入")
+                
+                # 设置较小的批次大小
+                smaller_batch_size = max(1, len(processed_records) // 10)
+                successful_count = 0
+                
+                # 分批处理
+                for i in range(0, len(processed_records), smaller_batch_size):
+                    batch = processed_records[i:i+smaller_batch_size]
+                    try:
+                        batch_count = self.db_manager.import_data(table_name, batch)
+                        successful_count += batch_count
+                    except Exception as batch_error:
+                        self.logger.error(f"批次导入失败 ({i}-{i+len(batch)}): {str(batch_error)}")
+                
+                self.logger.info(f"分批导入完成，成功导入 {successful_count}/{record_count} 条记录")
+                return successful_count
+                
+        except Exception as e:
+            self.logger.error(f"导入理财购买记录时出错: {str(e)}")
+            return 0
+
+    def _validate_record(self, record):
+        """
+        验证记录的有效性和完整性
+        
+        检查必要字段是否存在和有效
+        
+        Args:
+            record (dict): 需要验证的记录
+            
+        Returns:
+            bool: 记录是否有效
+        """
+        # 必填字段列表
+        required_fields = [
+            'detail_id', 'base_id', 'product_id', 'detail_time', 
+            'purchase_amount', 'wealth_date', 'wealth_status'
+        ]
+        
+        # 检查必填字段
+        for field in required_fields:
+            if field not in record or record[field] is None:
+                self.logger.debug(f"记录缺少必填字段: {field}")
+                return False
+        
+        # 检查金额字段
+        if not isinstance(record.get('purchase_amount'), (int, float)) or record.get('purchase_amount') <= 0:
+            self.logger.debug(f"记录的购买金额无效: {record.get('purchase_amount')}")
+            return False
+        
+        # 检查持有金额
+        if 'hold_amount' in record and (not isinstance(record.get('hold_amount'), (int, float)) or record.get('hold_amount') < 0):
+            self.logger.debug(f"记录的持有金额无效: {record.get('hold_amount')}")
+            return False
+        
+        # 检查时间戳
+        if not isinstance(record.get('detail_time'), (int, float)):
+            self.logger.debug(f"记录的时间戳无效: {record.get('detail_time')}")
+            return False
+        
+        # 检查理财状态
+        if record.get('wealth_status') not in ['持有', '部分卖出', '完全赎回']:
+            self.logger.debug(f"记录的理财状态无效: {record.get('wealth_status')}")
+            return False
+        
+        return True
+
+    def _get_customer_info(self, customer_id):
+        """
+        获取客户信息
+        
+        Args:
+            customer_id (str): 客户ID
+            
+        Returns:
+            dict: 客户信息字典，如果未找到返回None
+        """
+        try:
+            query = "SELECT * FROM cdp_customer_profile WHERE base_id = %s"
+            results = self.db_manager.execute_query(query, (customer_id,))
+            
+            if results and len(results) > 0:
+                return results[0]
+            
+            return None
+                
+        except Exception as e:
+            self.logger.error(f"获取客户信息时出错: {str(e)}")
+            return None
+
+    def _get_product_info(self, product_id):
+        """
+        获取产品信息
+        
+        Args:
+            product_id (str): 产品ID
+            
+        Returns:
+            dict: 产品信息字典，如果未找到返回None
+        """
+        try:
+            query = "SELECT * FROM cdp_product_archive WHERE base_id = %s"
+            results = self.db_manager.execute_query(query, (product_id,))
+            
+            if results and len(results) > 0:
+                return results[0]
+            
+            return None
+                
+        except Exception as e:
+            self.logger.error(f"获取产品信息时出错: {str(e)}")
+            return None
+
+    def _update_customer_info(self, customer_id, updates):
+        """
+        更新客户信息
+        
+        Args:
+            customer_id (str): 客户ID
+            updates (dict): 需要更新的字段和值
+            
+        Returns:
+            bool: 更新是否成功
+        """
+        try:
+            if not updates:
+                return True
+            
+            # 构建SET子句
+            set_clause = ", ".join([f"{field} = %s" for field in updates.keys()])
+            
+            # 构建参数列表
+            params = list(updates.values())
+            params.append(customer_id)  # WHERE条件参数
+            
+            # 构建更新语句
+            update_query = f"""
+            UPDATE cdp_customer_profile 
+            SET {set_clause} 
+            WHERE base_id = %s
+            """
+            
+            # 执行更新
+            result = self.db_manager.execute_update(update_query, params)
+            
+            return result > 0  # 影响行数大于0表示成功
+                
+        except Exception as e:
+            self.logger.error(f"更新客户信息时出错: {str(e)}")
+            return False
+        
+    def _generate_purchase_event(self, customer_id, investment_info):
+        """
+        生成购买相关事件
+        
+        Args:
+            customer_id (str): 客户ID
+            investment_info (dict): 投资信息
+            
+        Returns:
+            bool: 是否成功生成事件
+        """
+        if not self.events_generator:
+            return False
+        
+        try:
+            # 获取产品信息
+            product_id = investment_info.get('product_id')
+            product_info = self._get_product_info(product_id)
+            
+            if not product_info:
+                self.logger.warning(f"生成购买事件时未找到产品信息，产品ID: {product_id}")
+                return False
+            
+            # 创建事件数据
+            event_data = {
+                'base_id': customer_id,
+                'product_id': product_id,
+                'product_name': product_info.get('name', '未知产品'),
+                'product_type': product_info.get('product_type', '未知'),
+                'purchase_amount': investment_info.get('purchase_amount'),
+                'purchase_status': investment_info.get('status', '成功'),
+                'purchase_channel': investment_info.get('channel', 'mobile_app'),
+                'detail_time': investment_info.get('detail_time'),
+                'expected_yield': product_info.get('expected_yield')
+            }
+            
+            # 是否首次购买
+            is_first_purchase = self._is_first_purchase(customer_id)
+            event_data['is_first_purchase'] = is_first_purchase
+            
+            # 生成不同类型的事件
+            events = []
+            
+            # 1. 产品购买结果事件
+            purchase_event = {
+                'event': 'product_purchase_result_event',
+                'event_time': event_data['detail_time'],
+                'event_property': {
+                    'productname': event_data['product_name'],
+                    'productid': event_data['product_id'],
+                    'purchasestatus': event_data['purchase_status'],
+                    'purchaseamount': event_data['purchase_amount'],
+                    'productredeemdate': investment_info.get('term', 0),
+                    'isfirsttimepurchase': 'true' if is_first_purchase else 'false'
+                }
+            }
+            events.append(purchase_event)
+            
+            # 2. 产品详情页浏览事件（假设在购买前查看了产品详情）
+            view_event = {
+                'event': 'product_detail_view_event',
+                'event_time': event_data['detail_time'] - 300000,  # 5分钟前
+                'event_property': {
+                    'TimeLength': round(random.uniform(1.5, 8.0), 1),  # 浏览时间1.5-8分钟
+                    'ReviewDate': datetime.datetime.fromtimestamp(event_data['detail_time']/1000).strftime('%Y-%m-%d'),
+                    'PageIP': f"192.168.{random.randint(1, 254)}.{random.randint(1, 254)}"
+                }
+            }
+            events.append(view_event)
+            
+            # 3. 理财产品点击事件（假设在查看详情前点击了产品）
+            click_event = {
+                'event': 'weatlth_product_click_event',
+                'event_time': event_data['detail_time'] - 600000,  # 10分钟前
+                'event_property': {
+                    'ClickDate': datetime.datetime.fromtimestamp(event_data['detail_time']/1000).strftime('%Y-%m-%d')
+                }
+            }
+            events.append(click_event)
+            
+            # 保存事件
+            for event in events:
+                event['base_id'] = customer_id
+                self.events_generator.create_event(event)
+            
+            self.logger.debug(f"为客户 {customer_id} 生成了 {len(events)} 条购买相关事件")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"生成购买事件时出错: {str(e)}")
+            return False
+
+    def _generate_redemption_event(self, customer_id, investment_info):
+        """
+        生成赎回相关事件
+        
+        Args:
+            customer_id (str): 客户ID
+            investment_info (dict): 投资信息
+            
+        Returns:
+            bool: 是否成功生成事件
+        """
+        if not self.events_generator:
+            return False
+        
+        try:
+            # 获取产品信息
+            product_id = investment_info.get('product_id')
+            product_info = self._get_product_info(product_id)
+            
+            if not product_info:
+                self.logger.warning(f"生成赎回事件时未找到产品信息，产品ID: {product_id}")
+                return False
+            
+            # 确定赎回时间
+            if 'wealth_all_redeem_time' in investment_info and investment_info['wealth_all_redeem_time']:
+                redemption_time = investment_info['wealth_all_redeem_time']
+            else:
+                # 使用当前时间作为赎回时间
+                redemption_time = int(datetime.datetime.now().timestamp() * 1000)
+            
+            # 确定赎回状态
+            is_full_redemption = investment_info.get('wealth_status') == '完全赎回'
+            
+            # 确定赎回金额
+            if 'redemption_amount' in investment_info:
+                redemption_amount = investment_info['redemption_amount']
+            else:
+                # 使用持有金额作为赎回金额
+                redemption_amount = investment_info.get('hold_amount', 0)
+            
+            # 创建事件数据
+            event_data = {
+                'base_id': customer_id,
+                'product_id': product_id,
+                'product_name': product_info.get('name', '未知产品'),
+                'product_type': product_info.get('product_type', '未知'),
+                'redemption_amount': redemption_amount,
+                'redemption_status': '成功',  # 假设赎回成功
+                'redemption_time': redemption_time,
+                'is_full_redemption': is_full_redemption
+            }
+            
+            # 生成不同类型的事件
+            events = []
+            
+            # 1. 产品赎回事件
+            redeem_event = {
+                'event': 'product_redeem_event',
+                'event_time': event_data['redemption_time'],
+                'event_property': {
+                    'productname': event_data['product_name'],
+                    'productid': event_data['product_id'],
+                    'redeemstatus': event_data['redemption_status'],
+                    'redeemamount': event_data['redemption_amount'],
+                    'isredeemall': '是' if event_data['is_full_redemption'] else '否'
+                }
+            }
+            events.append(redeem_event)
+            
+            # 保存事件
+            for event in events:
+                event['base_id'] = customer_id
+                self.events_generator.create_event(event)
+            
+            self.logger.debug(f"为客户 {customer_id} 生成了 {len(events)} 条赎回相关事件")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"生成赎回事件时出错: {str(e)}")
+            return False
+
+    def _is_first_purchase(self, customer_id):
+        """
+        检查是否是客户的首次购买
+        
+        Args:
+            customer_id (str): 客户ID
+            
+        Returns:
+            bool: 是否是首次购买
+        """
+        try:
+            query = """
+            SELECT COUNT(*) as count 
+            FROM cdp_investment_order 
+            WHERE base_id = %s
+            """
+            
+            results = self.db_manager.execute_query(query, (customer_id,))
+            
+            if results and 'count' in results[0]:
+                return results[0]['count'] <= 1  # 考虑当前记录，0或1都是首次
+            
+            return True  # 如果无法确定，假设是首次
+                
+        except Exception as e:
+            self.logger.error(f"检查首次购买时出错: {str(e)}")
+            return True  # 错误情况下，假设是首次
+        
+    

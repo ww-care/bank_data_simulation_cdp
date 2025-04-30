@@ -1130,3 +1130,405 @@ class ProductMatcher:
         except Exception as e:
             self.logger.error(f"计算银行偏好时出错: {str(e)}")
             return 0.5
+        
+    def _calculate_risk_match_score(self, customer_risk_level, product_risk_level):
+        """
+        计算客户风险等级与产品风险等级的匹配分数
+        
+        Args:
+            customer_risk_level (str): 客户风险等级 (R1-R5)
+            product_risk_level (str): 产品风险等级 (R1-R5)
+            
+        Returns:
+            float: 匹配分数 (0-1)，值越高表示匹配度越高
+        """
+        # 风险等级数值映射
+        risk_values = {'R1': 1, 'R2': 2, 'R3': 3, 'R4': 4, 'R5': 5}
+        
+        # 获取风险等级数值
+        customer_value = risk_values.get(customer_risk_level, 3)  # 默认R3
+        product_value = risk_values.get(product_risk_level, 3)    # 默认R3
+        
+        # 风险容忍度: 客户通常可以接受等于或低于自身风险等级的产品
+        # 保守客户(R1-R2)可能更倾向于选择低风险产品
+        # 平衡型客户(R3)可以接受相近风险等级的产品
+        # 进取型客户(R4-R5)可能更倾向于高风险高收益产品
+        
+        # 计算风险差异
+        risk_diff = abs(customer_value - product_value)
+        
+        # 基础匹配分数
+        if risk_diff == 0:
+            # 风险等级完全匹配
+            base_score = 1.0
+        elif risk_diff == 1:
+            # 风险等级差一级
+            base_score = 0.8
+        elif risk_diff == 2:
+            # 风险等级差两级
+            base_score = 0.5
+        else:
+            # 风险等级差距较大
+            base_score = 0.3
+        
+        # 调整因子: 考虑客户风险偏好特性
+        adjustment = 0.0
+        
+        # 保守型客户(R1-R2)更偏好低风险产品
+        if customer_value <= 2 and product_value <= customer_value:
+            adjustment = 0.1
+            
+        # 平衡型客户(R3)偏好匹配风险的产品
+        elif customer_value == 3 and risk_diff <= 1:
+            adjustment = 0.05
+            
+        # 进取型客户(R4-R5)更偏好较高风险产品
+        elif customer_value >= 4 and product_value >= customer_value - 1:
+            adjustment = 0.15
+            
+        # 保守客户一般不接受高风险产品
+        if customer_value <= 2 and product_value >= 4:
+            adjustment = -0.2
+            
+        # 进取型客户可能对低风险产品兴趣较低
+        elif customer_value >= 4 and product_value <= 2:
+            adjustment = -0.1
+        
+        # 计算最终分数并确保在0-1范围内
+        final_score = max(0.0, min(1.0, base_score + adjustment))
+        
+        return final_score
+    
+    def calculate_investment_capacity(self, customer):
+        """
+        计算客户的投资能力
+        
+        考虑客户类型、收入水平、VIP状态、风险等级等因素
+        
+        Args:
+            customer (dict): 客户信息
+            
+        Returns:
+            dict: 包含最小金额、最大金额和建议金额的字典
+        """
+        # 获取客户基本信息
+        customer_type = customer.get('customer_type', 'personal')
+        is_vip = customer.get('is_vip', False)
+        risk_level = customer.get('risk_level', 'R3')
+        
+        # 获取金额配置
+        amount_config = self.config.get('amount_config', {})
+        
+        # 根据客户类型获取基础金额配置
+        if customer_type == 'corporate':
+            # 企业客户
+            base_config = amount_config.get('corporate', {
+                'min': 100000,   # 默认最低10万
+                'max': 2000000,  # 默认最高200万
+                'mean': 500000,  # 默认平均50万
+                'std_dev': 300000  # 默认标准差30万
+            })
+        else:
+            # 个人客户
+            base_config = amount_config.get('personal', {
+                'min': 10000,    # 默认最低1万
+                'max': 200000,   # 默认最高20万
+                'mean': 50000,   # 默认平均5万
+                'std_dev': 30000  # 默认标准差3万
+            })
+        
+        # 获取基础金额范围
+        min_amount = base_config.get('min', 10000)
+        max_amount = base_config.get('max', 200000)
+        mean_amount = base_config.get('mean', 50000)
+        std_dev = base_config.get('std_dev', 30000)
+        
+        # VIP客户调整 - 增加投资金额上限和平均值
+        if is_vip:
+            vip_multiplier = amount_config.get('vip_multiplier', 1.5)
+            max_amount = max_amount * vip_multiplier
+            mean_amount = mean_amount * vip_multiplier
+        
+        # 风险等级调整
+        # 高风险等级的客户可能有更高的投资能力
+        risk_multipliers = {
+            'R1': 0.8,  # 保守型客户可能投资金额相对较小
+            'R2': 0.9,
+            'R3': 1.0,  # 标准基准
+            'R4': 1.1,
+            'R5': 1.3   # 激进型客户可能投资金额相对较大
+        }
+        
+        risk_multiplier = risk_multipliers.get(risk_level, 1.0)
+        max_amount = max_amount * risk_multiplier
+        mean_amount = mean_amount * risk_multiplier
+        
+        # 收入水平调整 (如果有收入信息)
+        income_category = customer.get('salarycategory', '')
+        income_multipliers = {
+            '1级': 0.7,   # 低收入
+            '2级': 0.8,
+            '3级': 0.9,
+            '4级': 1.0,   # 中等收入
+            '5级': 1.2,
+            '6级': 1.4,
+            '7级': 1.7,
+            '8级': 2.0    # 高收入
+        }
+        
+        income_multiplier = income_multipliers.get(income_category, 1.0)
+        max_amount = max_amount * income_multiplier
+        mean_amount = mean_amount * income_multiplier
+        
+        # 考虑历史购买行为 (如果可用)
+        if 'wealthamount' in customer and customer['wealthamount']:
+            historical_amount = float(customer['wealthamount'])
+            if historical_amount > 0:
+                # 历史购买金额对建议金额有一定影响
+                mean_amount = (mean_amount + historical_amount) / 2
+        
+        # 确保最终金额在合理范围内
+        min_amount = max(min_amount, base_config.get('min', 10000))
+        max_amount = max(max_amount, min_amount * 1.5)
+        suggested_amount = max(min_amount, min(max_amount, mean_amount))
+        
+        return {
+            'min_amount': round(min_amount, 2),
+            'max_amount': round(max_amount, 2),
+            'suggested_amount': round(suggested_amount, 2)
+        }
+    
+    def find_matching_products(self, customer, products=None, limit=10):
+        """
+        根据客户特征查找匹配的产品
+        
+        Args:
+            customer (dict): 客户信息
+            products (list, optional): 可选的产品列表，如不提供则从数据库查询
+            limit (int): 最多返回的产品数量
+            
+        Returns:
+            list: 匹配的产品列表，每项包含产品信息和匹配分数
+        """
+        try:
+            # 获取客户风险等级
+            customer_risk = customer.get('risk_level', 'R3')
+            customer_type = customer.get('customer_type', 'personal')
+            
+            # 如果未提供产品列表，从数据库查询
+            if products is None:
+                products = self._get_available_products()
+                
+                # 如果查询失败或没有产品，返回空列表
+                if not products:
+                    self.logger.warning("没有可用的产品")
+                    return []
+            
+            # 计算客户投资能力
+            investment_capacity = self.calculate_investment_capacity(customer)
+            min_investment = investment_capacity['min_amount']
+            max_investment = investment_capacity['max_amount']
+            
+            # 筛选满足最低投资需求的产品
+            eligible_products = []
+            for product in products:
+                # 检查最低投资要求
+                product_min_investment = product.get('minimum_investment', 0)
+                if product_min_investment > max_investment:
+                    # 客户投资能力不足
+                    continue
+                
+                # 风险等级匹配检查
+                product_risk = product.get('risk_level', 'R1')
+                risk_match_score = self._calculate_risk_match_score(customer_risk, product_risk)
+                
+                # 风险匹配分数太低的产品直接排除
+                if risk_match_score < 0.3:
+                    continue
+                
+                # 计算产品特征匹配分数
+                feature_match_score = self._calculate_feature_match_score(customer, product)
+                
+                # 计算预期收益匹配分数
+                return_match_score = self._calculate_return_match_score(customer, product)
+                
+                # 计算最终匹配分数 (加权平均)
+                # 风险匹配占50%，特征匹配占30%，收益匹配占20%
+                match_score = (
+                    0.5 * risk_match_score + 
+                    0.3 * feature_match_score + 
+                    0.2 * return_match_score
+                )
+                
+                # 添加到合格产品列表
+                eligible_products.append({
+                    'product': product,
+                    'match_score': match_score,
+                    'risk_match': risk_match_score,
+                    'feature_match': feature_match_score,
+                    'return_match': return_match_score
+                })
+            
+            # 按匹配分数排序
+            eligible_products.sort(key=lambda x: x['match_score'], reverse=True)
+            
+            # 返回指定数量的产品
+            return eligible_products[:limit]
+        
+        except Exception as e:
+            self.logger.error(f"查找匹配产品时出错: {str(e)}")
+            return []
+
+
+    def _calculate_feature_match_score(self, customer, product):
+        """
+        计算客户与产品特征的匹配程度
+        
+        考虑产品类型、期限、赎回方式等与客户偏好的匹配
+        
+        Args:
+            customer (dict): 客户信息
+            product (dict): 产品信息
+            
+        Returns:
+            float: 匹配分数 (0-1)
+        """
+        # 初始分数
+        score = 0.5
+        
+        # 获取产品特征
+        product_type = product.get('product_type', '')
+        investment_period = product.get('investment_period', 0)  # 以月为单位
+        redemption_way = product.get('redemption_way', '随时赎回')
+        
+        # 1. 产品类型偏好匹配
+        # 检查客户是否有首次购买记录
+        first_purchase_type = customer.get('firstpurchasetype', None)
+        if first_purchase_type and first_purchase_type == product_type:
+            # 客户可能偏好与首次购买相同类型的产品
+            score += 0.1
+        
+        # 2. 期限偏好匹配
+        customer_type = customer.get('customer_type', 'personal')
+        if customer_type == 'personal':
+            # 个人客户可能更偏好中短期产品
+            if 3 <= investment_period <= 12:
+                score += 0.1
+            elif investment_period > 24:
+                score -= 0.1
+        else:
+            # 企业客户根据不同规模可能有不同偏好
+            company_size = customer.get('company_size', 'medium')
+            if company_size == 'small':
+                # 小型企业可能偏好短期灵活产品
+                if investment_period <= 6:
+                    score += 0.1
+            elif company_size == 'large':
+                # 大型企业可能更能接受长期产品
+                if investment_period >= 12:
+                    score += 0.1
+        
+        # 3. 赎回方式偏好
+        is_vip = customer.get('is_vip', False)
+        if is_vip and redemption_way == '随时赎回':
+            # VIP客户可能更看重灵活性
+            score += 0.1
+        
+        # 4. 考虑客户历史行为 (如果有)
+        if 'nousedays' in customer:
+            try:
+                unused_days = int(customer['nousedays'])
+                if unused_days > 60 and redemption_way == '随时赎回':
+                    # 长期未操作客户可能更需要灵活性
+                    score += 0.05
+            except (ValueError, TypeError):
+                pass
+        
+        # 确保最终分数在0-1范围内
+        return max(0.0, min(1.0, score))
+
+
+    def _calculate_return_match_score(self, customer, product):
+        """
+        计算预期收益与客户偏好的匹配程度
+        
+        Args:
+            customer (dict): 客户信息
+            product (dict): 产品信息
+            
+        Returns:
+            float: 匹配分数 (0-1)
+        """
+        # 初始分数
+        score = 0.5
+        
+        # 获取产品预期收益率
+        expected_yield = product.get('expected_yield', 0)
+        
+        # 获取客户风险等级
+        risk_level = customer.get('risk_level', 'R3')
+        
+        # 根据风险等级确定预期收益范围
+        expected_return_ranges = {
+            'R1': (0.015, 0.035),  # 保守型 1.5%-3.5%
+            'R2': (0.025, 0.045),  # 稳健型 2.5%-4.5%
+            'R3': (0.035, 0.060),  # 平衡型 3.5%-6.0%
+            'R4': (0.050, 0.080),  # 积极型 5.0%-8.0%
+            'R5': (0.070, 0.120)   # 激进型 7.0%-12.0%
+        }
+        
+        # 获取客户风险等级对应的收益范围
+        min_return, max_return = expected_return_ranges.get(risk_level, (0.035, 0.060))
+        
+        # 收益在客户预期范围内，得分提高
+        if min_return <= expected_yield <= max_return:
+            score += 0.3
+        elif expected_yield < min_return:
+            # 收益低于预期，得分降低（与差距成正比）
+            score -= 0.2 * (min_return - expected_yield) / min_return
+        elif expected_yield > max_return:
+            # 收益高于预期，可能有额外风险，得分小幅提高
+            score += 0.1
+        
+        # 收益率极端情况处理
+        if expected_yield > 0.15:  # 超高收益率（可能有风险）
+            score -= 0.2
+        
+        # 考虑客户类型
+        customer_type = customer.get('customer_type', 'personal')
+        if customer_type == 'corporate':
+            # 企业客户可能更注重稳定性
+            if expected_yield < 0.06:
+                score += 0.05
+        
+        # 考虑是否VIP客户
+        is_vip = customer.get('is_vip', False)
+        if is_vip:
+            # VIP客户可能对高收益产品更感兴趣
+            if expected_yield > max_return:
+                score += 0.05
+        
+        # 确保最终分数在0-1范围内
+        return max(0.0, min(1.0, score))
+
+
+    def _get_available_products(self):
+        """
+        从数据库获取当前可用的产品列表
+        
+        Returns:
+            list: 可用产品列表
+        """
+        try:
+            query = """
+            SELECT * FROM cdp_product_archive
+            WHERE marketing_status = '在售'
+            AND (end_date IS NULL OR end_date >= CURDATE())
+            """
+            
+            products = self.db_manager.execute_query(query)
+            return products
+        
+        except Exception as e:
+            self.logger.error(f"获取可用产品时出错: {str(e)}")
+            return []
